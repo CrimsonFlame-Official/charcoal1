@@ -5,6 +5,13 @@
 
 namespace charcoal1 {
 
+void Compiler::register_native(const std::string& name) {
+    if (native_index_.count(name)) return;
+    size_t idx = prog_.native_names.size();
+    prog_.native_names.push_back(name);
+    native_index_[name] = idx;
+}
+
 Program Compiler::compile(const std::vector<StmtPtr>& program) {
     prog_.functions.clear();
     func_index_.clear();
@@ -178,11 +185,19 @@ void Compiler::compile_expr(Ctx& ctx, const ExprPtr& e) {
                      static_cast<uint16_t>(add_constant(ctx, Value::null())));
         } else {
             auto it = func_index_.find(c->callee);
-            if (it == func_index_.end())
-                throw std::runtime_error("compiler: undefined function '" + c->callee + "'");
-            for (auto& a : c->args) compile_expr(ctx, a);
-            emit_u16(ctx, Op::OP_CALL, static_cast<uint16_t>(it->second));
-            ctx.func->code.bytes.push_back(static_cast<uint8_t>(c->args.size()));
+            if (it != func_index_.end()) {
+                for (auto& a : c->args) compile_expr(ctx, a);
+                emit_u16(ctx, Op::OP_CALL, static_cast<uint16_t>(it->second));
+                ctx.func->code.bytes.push_back(static_cast<uint8_t>(c->args.size()));
+            } else {
+                auto nit = native_index_.find(c->callee);
+                if (nit == native_index_.end())
+                    throw std::runtime_error("compiler: undefined function '" +
+                                             c->callee + "'");
+                for (auto& a : c->args) compile_expr(ctx, a);
+                emit_u16(ctx, Op::OP_CALL_NATIVE, static_cast<uint16_t>(nit->second));
+                ctx.func->code.bytes.push_back(static_cast<uint8_t>(c->args.size()));
+            }
         }
     } else {
         throw std::runtime_error("compiler: unhandled expression");

@@ -12,6 +12,10 @@ namespace charcoal1 {
 
 class Compiler {
 public:
+    // Embedders (e.g. Spark) register host functions here before compile().
+    // Scripts call them by name; they dispatch to VM-registered natives.
+    void register_native(const std::string& name);
+
     // Compiles top-level statements. Function declarations are hoisted into
     // the function table; remaining statements form "main".
     Program compile(const std::vector<StmtPtr>& program);
@@ -37,6 +41,7 @@ private:
 
     Program prog_;
     std::map<std::string, size_t> func_index_; // name -> functions[] index
+    std::map<std::string, size_t> native_index_; // name -> native_names[] index
 };
 
 } // namespace charcoal1

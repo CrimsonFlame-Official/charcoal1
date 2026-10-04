@@ -12,10 +12,12 @@ namespace charcoal1 {
 
 // --- values ----------------------------------------------------------------
 struct Value {
-    enum class Type { Null, Number, Bool, Object };
+    enum class Type { Null, Number, Bool, Object, HostObject };
     Type type = Type::Null;
     double number = 0;
     GcObject* object = nullptr; // GcString for strings
+    void* host = nullptr;       // HostObject: native pointer owned by the embedder
+                                // (e.g. an Ignite DOM node). Not GC-managed.
 
     static Value null() { return Value{}; }
     static Value num(double d) { Value v; v.type = Type::Number; v.number = d; return v; }
@@ -23,13 +25,15 @@ struct Value {
         Value v; v.type = Type::Bool; v.number = b ? 1 : 0; return v;
     }
     static Value str(GcString* s) { Value v; v.type = Type::Object; v.object = s; return v; }
+    static Value host_object(void* p) { Value v; v.type = Type::HostObject; v.host = p; return v; }
 
     bool truthy() const {
         switch (type) {
             case Type::Null:   return false;
             case Type::Bool:
             case Type::Number: return number != 0;
-            case Type::Object: return true;
+            case Type::Object:
+            case Type::HostObject: return true;
         }
         return false;
     }
@@ -54,6 +58,7 @@ enum Op : uint8_t {
     OP_JUMP,         // u16 target           -> ip = target
     OP_JUMP_IF_FALSE,// u16 target           -> pop(); if falsy ip = target
     OP_CALL,         // u16 func_idx, u8 argc -> call function
+    OP_CALL_NATIVE,  // u16 native_idx, u8 argc -> call embedder native
     OP_LOAD_STRING,  // u16 string_idx       -> push program.strings[i]
     OP_PRINT,        // pop(); print to stdout
     OP_POP,          // discard top of stack
@@ -76,6 +81,7 @@ struct Function {
 struct Program {
     std::vector<Function> functions; // [0] is always "main"
     std::vector<std::string> strings; // string constant pool
+    std::vector<std::string> native_names; // embedder natives, by OP_CALL_NATIVE index
 };
 
 std::string disassemble(const Program& prog);

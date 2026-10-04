@@ -20,6 +20,7 @@ std::string Value::to_string() const {
         case Type::Object:
             if (auto* s = dynamic_cast<GcString*>(object)) return s->value;
             return "[object]";
+        case Type::HostObject: return "[host object]";
     }
     return "null";
 }
@@ -59,8 +60,33 @@ static double num_of(const Value& v) {
 Value VM::run() {
     Function& main = prog_.functions[0];
     frames_.push_back(Frame{&main, 0, std::vector<Value>(main.code.local_count)});
+    run_until(0);
+    return stack_.empty() ? Value::null() : stack_.back();
+}
 
-    while (!frames_.empty()) {
+Value VM::call_function(const std::string& name, const std::vector<Value>& args) {
+    size_t idx = prog_.functions.size();
+    for (size_t i = 0; i < prog_.functions.size(); ++i) {
+        if (prog_.functions[i].name == name) { idx = i; break; }
+    }
+    if (idx >= prog_.functions.size())
+        throw std::runtime_error("vm: no such function '" + name + "'");
+    Function& callee = prog_.functions[idx];
+    Frame fr{&callee, 0, std::vector<Value>(callee.code.local_count)};
+    for (size_t i = 0; i < args.size() && i < fr.locals.size(); ++i)
+        fr.locals[i] = args[i];
+    size_t depth = frames_.size();
+    frames_.push_back(std::move(fr));
+    run_until(depth);
+    return stack_.empty() ? Value::null() : pop();
+}
+
+void VM::register_native(const std::string& name, NativeFn fn) {
+    natives_[name] = std::move(fn);
+}
+
+void VM::run_until(size_t depth) {
+    while (frames_.size() > depth) {
         Frame& f = frames_.back();
         if (f.ip >= f.func->code.bytes.size())
             throw std::runtime_error("vm: ip out of bounds");
@@ -139,6 +165,20 @@ Value VM::run() {
                 frames_.push_back(std::move(nf));
                 break;
             }
+            case Op::OP_CALL_NATIVE: {
+                uint16_t ni = read_u16(f);
+                uint8_t argc = f.func->code.bytes[f.ip++];
+                if (ni >= prog_.native_names.size())
+                    throw std::runtime_error("vm: bad native index");
+                const std::string& name = prog_.native_names[ni];
+                auto it = natives_.find(name);
+                if (it == natives_.end())
+                    throw std::runtime_error("vm: native '" + name + "' not registered");
+                std::vector<Value> args(argc);
+                for (int i = argc - 1; i >= 0; --i) args[i] = pop();
+                push(it->second(*this, args));
+                break;
+            }
             case Op::OP_PRINT: {
                 std::cout << pop().to_string() << "\n";
                 break;
@@ -155,13 +195,12 @@ Value VM::run() {
                 break;
             }
             case Op::OP_HALT: {
-                Value r = stack_.empty() ? Value::null() : stack_.back();
+                // Unwinds to the base depth; run() reads the stack top.
                 frames_.clear();
-                return r;
+                break;
             }
         }
     }
-    return Value::null();
 }
 
 std::string disassemble(const Program& prog) {
@@ -176,12 +215,13 @@ std::string disassemble(const Program& prog) {
         static const char* names[] = {
             "LOAD_CONST", "LOAD_LOCAL", "STORE_LOCAL", "ADD", "SUB", "MUL",
             "DIV", "EQ", "NE", "LT", "GT", "LE", "GE", "JUMP",
-            "JUMP_IF_FALSE", "CALL", "LOAD_STRING", "PRINT", "POP", "RET", "HALT",
+            "JUMP_IF_FALSE", "CALL", "CALL_NATIVE", "LOAD_STRING", "PRINT",
+            "POP", "RET", "HALT",
         };
         while (ip < b.size()) {
             char line[64];
             uint8_t op = b[ip];
-            const char* nm = op < 21 ? names[op] : "?";
+            const char* nm = op < 22 ? names[op] : "?";
             std::snprintf(line, sizeof(line), "  %4zu  %-14s", ip, nm);
             out += line;
             ++ip;
@@ -192,7 +232,7 @@ std::string disassemble(const Program& prog) {
                 uint16_t v = static_cast<uint16_t>(b[ip] << 8) | b[ip + 1];
                 out += " " + std::to_string(v);
                 ip += 2;
-            } else if (op == Op::OP_CALL) {
+            } else if (op == Op::OP_CALL || op == Op::OP_CALL_NATIVE) {
                 uint16_t fi2 = static_cast<uint16_t>(b[ip] << 8) | b[ip + 1];
                 uint8_t argc = b[ip + 2];
                 out += " f" + std::to_string(fi2) + " argc=" + std::to_string(argc);
